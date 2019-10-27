@@ -9,6 +9,11 @@ ACTION_FAREWELL = 3
 ACTION_VANISH = 4
 ACTION_QUEUE = 5
 ACTION_IGNOREFOCUS = 6
+ACTION_TRADE = 7
+ACTION_TRADE_BUY = 8
+ACTION_TRADE_BUY_REPLY = 9
+ACTION_TRADE_SELL = 10
+ACTION_TRADE_SELL_REPLY = 11
 
 MESSAGE_DEFAULT_GREET = 1
 MESSAGE_DEFAULT_WALKAWAY = 2
@@ -53,6 +58,8 @@ function OtNpcSystem:Init()
 		Charges = 0,
 		Amount = 1
 	}
+	
+	obj.Trade = {}
 
 	setmetatable( obj, self )
 	self.__index = self
@@ -150,6 +157,8 @@ function OtNpcSystem:onCreatureSay( cid, type, message )
 		self:processNormalAction( player:getId(), action )
 	elseif action.type == ACTION_FAREWELL then
 		self:processFarewellAction( player:getId(), action )
+	elseif action.type == ACTION_TRADE then
+		self:doOpenTradeWindow( player:getId(), action )
 	end
 
 	self:setTalkState( player:getId(), ( action.parameters.talkState ~= nil and action.parameters.talkState or 0 ) )
@@ -245,11 +254,11 @@ function OtNpcSystem:processNormalAction( cid, action )
 		return
 	end
 
-	if action.parameters.Shop ~= nil then
-		self.Shop.Id = ( action.parameters.Shop[1] ~= nil and tonumber( action.parameters.Shop[1] ) or 0 )
-		self.Shop.Count = ( ( action.parameters.Shop[2] ~= nil and tonumber( action.parameters.Shop[2] ) or 1 ) * self.Shop.Amount )
-		self.Shop.Price = ( ( action.parameters.Shop[3] ~= nil and tonumber( action.parameters.Shop[3] ) or 0 ) * self.Shop.Amount )
-		self.Shop.Charges = ( action.parameters.Shop[4] ~= nil and tonumber( action.parameters.Shop[4] ) or 0 )
+	if action.parameters.shop ~= nil then
+		self.Shop.Id = ( action.parameters.shop[1] ~= nil and tonumber( action.parameters.shop[1] ) or 0 )
+		self.Shop.Count = ( ( action.parameters.shop[2] ~= nil and tonumber( action.parameters.shop[2] ) or 1 ) * self.Shop.Amount )
+		self.Shop.Price = ( ( action.parameters.shop[3] ~= nil and tonumber( action.parameters.shop[3] ) or 0 ) * self.Shop.Amount )
+		self.Shop.Charges = ( action.parameters.shop[4] ~= nil and tonumber( action.parameters.shop[4] ) or 0 )
 	end
 
 	if action.parameters.reply == nil then
@@ -259,6 +268,152 @@ function OtNpcSystem:processNormalAction( cid, action )
 	self:processNpcSay( cid, action.parameters.reply )
 
 end
+
+
+
+
+
+
+
+
+
+function OtNpcSystem:doOpenTradeWindow( cid, action )
+
+	if not self:isFocused( cid ) then
+		return
+	end
+
+	openShopWindow(
+		cid,
+		self.Trade,
+		function( cid, itemid, subType, amount, ignoreCap, inBackpacks )
+			self:tradeBuyCallback( cid, itemid, subType, amount, ignoreCap, inBackpacks )
+		end,
+		function( cid, itemid, subType, amount, ignoreCap, inBackpacks )
+			self:tradeSellCallback( cid, itemid, subType, amount, ignoreCap, inBackpacks )
+		end
+	)
+
+	if action.parameters.reply == nil then
+		return
+	end
+	
+	self:processNpcSay( cid, action.parameters.reply )
+
+end
+
+function OtNpcSystem:tradeBuyCallback( cid, itemid, subType, amount, ignoreCap, inBackpacks )
+	
+	local player = Player( cid )
+	local shopItem = self:getTradeWindowItem( itemid, subType, true )
+
+	if shopItem == nil or shopItem.buy == -1 then
+		return false
+	end
+
+	local backpackId = 1988
+	local totalCost = amount * shopItem.buy
+	
+	if inBackpacks then
+		totalCost = isItemStackable( itemid ) == true and totalCost + 20 or totalCost + ( math.max(1, math.floor( amount / getContainerCapById( backpackId ) ) ) * 20 )
+	end
+	
+	local subType = shopItem.subType or 1
+	local a, b = doNpcSellItem( cid, itemid, amount, subType, ignoreCap, inBackpacks, backpackId )
+	
+	if a < amount then
+
+		doPlayerSendCancel( cid, ( a == 0 and "You do not have enough capacity." or "You do not have enough capacity for all items." ) )
+
+		if a > 0 then
+			doPlayerRemoveMoney( cid, ( ( a * shopItem.buy ) + ( b * 20 ) ) )
+			return true
+		end
+
+		return false
+	end
+	
+	doPlayerSendTextMessage( cid, MESSAGE_INFO_DESCR, string.format( "Bought %dx %s for %d gold.", amount, ItemType( itemid ):getName(), totalCost ) )
+	doPlayerRemoveMoney( cid, totalCost )
+
+	local action = self:findAction( cid, ACTION_TRADE_BUY_REPLY )
+	if action ~= false and action.parameters.reply ~= nil then
+		self:processNpcSay( cid, string.gsub( action.parameters.reply, "%%P", totalCost ) )
+	end
+
+	return true
+end
+
+function OtNpcSystem:tradeSellCallback( cid, itemid, subType, amount, ignoreCap, inBackpacks )
+	
+	local shopItem = self:getTradeWindowItem( itemid, subType, false )
+	if shopItem == nil or shopItem.sell == -1 then
+		return false
+	end
+
+	if not isItemFluidContainer( itemid ) then
+		subType = -1
+	end
+	
+	local totalCost = ( amount * shopItem.sell )
+
+	if not doPlayerRemoveItem( cid, itemid, amount, subType, ignoreEquipped ) then
+		doPlayerSendCancel( cid, "You do not have this object." )
+		return false
+	end
+	
+	doPlayerSendTextMessage( cid, MESSAGE_INFO_DESCR, string.format( "Sold %dx %s for %d gold.", amount, ItemType( itemid ):getName():lower(), totalCost ) )
+	doPlayerAddMoney( cid, totalCost )
+
+	local action = self:findAction( cid, ACTION_TRADE_SELL_REPLY )
+	if action ~= false and action.parameters.reply ~= nil then
+		self:processNpcSay( cid, string.gsub( action.parameters.reply, "%%P", totalCost ) )
+	end
+
+	return true
+end
+
+function OtNpcSystem:getTradeWindowItem( itemId, itemSubType, onBuy )
+	
+	if onBuy == nil then
+		return nil
+	end
+	
+	if ItemType( itemId ):isFluidContainer() then
+		for i = 1, #self.Trade do
+			local shopItem = self.Trade[i]
+			if shopItem.id == itemId and shopItem.subType == itemSubType then
+				if not onBuy and shopItem.sell > 0 then
+					return shopItem
+				elseif onBuy and shopItem.buy > 0 then
+					return shopItem
+				end
+			end
+		end
+	else
+		for i = 1, #self.Trade do
+			local shopItem = self.Trade[i]
+			if shopItem.id == itemId then
+				if not onBuy and shopItem.sell > 0 then
+					return shopItem
+				elseif onBuy and shopItem.buy > 0 then
+					return shopItem
+				end
+			end
+		end
+	end
+
+	return nil
+end
+
+
+
+
+
+
+
+
+
 
 function OtNpcSystem:processNpcSay( cid, message )
 
@@ -310,32 +465,17 @@ function OtNpcSystem:findActionKeyword( action, message )
 	return false
 end
 
-function OtNpcSystem:processActionKeywords( keyword, message )
-	
-	if keyword ~= nil and #keyword > 0 then
-		
-		local ret = true
-		local amount = 1
-		
-		for _, v in ipairs( keyword ) do
-			if type( v ) == "string" then
-				if v == "%d+" and string.match( message, "%d+" ) ~= nil then
-					amount = tonumber( string.match( message, "%d+" ) )
-				end
-				local a, b = string.find( message, v )
-				if a == nil or b == nil then
-					ret = false
-					break
-				end
-			end
+function OtNpcSystem:processActionKeywords( keywords, message )
+
+	local ret = true
+	for _, keyword in pairs( keywords ) do
+		local a, b = string.find( message, keyword )
+		if a == nil or b == nil then
+			ret = false
+			break
 		end
-		
-		self.Shop.Amount = amount
-
-		return ret
 	end
-
-	return false
+	return ret
 end
 
 function OtNpcSystem:processActionCondition( cid, action )
@@ -360,6 +500,17 @@ function OtNpcSystem:processAction( cid, action )
 end
 
 function OtNpcSystem:addAction( typeEx, parameters, condition, action )
+
+	if typeEx == ACTION_TRADE_BUY or typeEx == ACTION_TRADE_SELL then
+		
+		if parameters.id == nil or type( parameters.id ) ~= "number" then
+			return
+		end
+		
+		table.insert( self.Trade, { id = parameters.id, buy = ( typeEx == ACTION_TRADE_BUY and parameters.price or 0 ), sell = ( typeEx == ACTION_TRADE_SELL and parameters.price or 0 ), subType = ( parameters.subType ~= nil and parameters.subType or 0 ), name = ( parameters.name ~= nil and parameters.name or ItemType( parameters.id ):getName() ) } )
+
+		return
+	end
 
 	keywords = parameters.keywords
 	parameters.keywords = {}
@@ -420,18 +571,19 @@ function OtNpcSystem:releaseFocus( cid )
 		self.TalkState[ cid ] = nil
 		self.TalkLast[ cid ] = nil
 		self.Focus[ cid ] = nil
-		
-		self:closeShopWindow( cid )
-		
+
 		local pos = nil
 		for k, v in pairs( self.Focus ) do
 			if v == cid then
 				pos = k
 			end
 		end
+		
 		table.remove( self.Focus, pos )
 		
 	end
+	
+	closeShopWindow( cid )
 	
 	self.Shop.Id = 0
 	self.Shop.Count = 1
@@ -484,16 +636,6 @@ function OtNpcSystem:isFocused( cid )
 	end
 	
 	return false
-end
-
-function OtNpcSystem:closeShopWindow( cid )
-	
-	if not self:isFocused( cid ) then
-		return
-	end
-	
-	closeShopWindow( cid )
-	
 end
 
 function OtNpcSystem:isInTalkRadius( cid )
